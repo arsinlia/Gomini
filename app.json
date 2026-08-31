@@ -18,6 +18,11 @@
       },
       "package": "com.gomini.ai.chat",
       "permissions": ["INTERNET"]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "86f97c7f-3d3b-49d7-9540-796464c46068"
+      }
     }
   }
 }
