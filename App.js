@@ -11,20 +11,276 @@ import {
   ActivityIndicator,
   SafeAreaView,
   Alert,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  loadSettings,
-  saveSettings,
-  loadChatHistory,
-  saveChatHistory,
-  clearChatHistory,
-  DEFAULT_SETTINGS,
-} from './src/services/storage';
-import { sendMessageToAI } from './src/services/aiService';
-import SettingsModal from './src/components/SettingsModal';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
+// --- STORAGE & DEFAULT CONSTANTS ---
+const SETTINGS_KEY = '@gomini_settings';
+const HISTORY_KEY = '@gomini_chat_history';
+
+const DEFAULT_SETTINGS = {
+  apiKey: '',
+  providerId: 'gemini',
+  customBaseUrl: '',
+  modelName: 'gemini-1.5-flash',
+  systemPrompt: 'You are a helpful and intelligent AI assistant named Gomini.',
+};
+
+// --- STORAGE UTILITIES ---
+const loadSettings = async () => {
+  try {
+    const data = await AsyncStorage.getItem(SETTINGS_KEY);
+    return data ? { ...DEFAULT_SETTINGS, ...JSON.parse(data) } : DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+};
+
+const saveSettings = async (settings) => {
+  try {
+    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.error('Error saving settings', e);
+  }
+};
+
+const loadChatHistory = async () => {
+  try {
+    const data = await AsyncStorage.getItem(HISTORY_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveChatHistory = async (history) => {
+  try {
+    await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch (e) {
+    console.error('Error saving history', e);
+  }
+};
+
+const clearChatHistory = async () => {
+  try {
+    await AsyncStorage.removeItem(HISTORY_KEY);
+  } catch (e) {
+    console.error('Error clearing history', e);
+  }
+};
+
+// --- AI SERVICE ---
+const sendMessageToAI = async ({
+  messages,
+  apiKey,
+  providerId,
+  customBaseUrl,
+  modelName,
+  systemPrompt,
+}) => {
+  if (providerId === 'gemini') {
+    const model = modelName || 'gemini-1.5-flash';
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const contents = [];
+    if (systemPrompt) {
+      contents.push({
+        role: 'user',
+        parts: [{ text: `[System Instructions]: ${systemPrompt}` }],
+      });
+      contents.push({
+        role: 'model',
+        parts: [{ text: 'Understood.' }],
+      });
+    }
+
+    messages.forEach((m) => {
+      contents.push({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }],
+      });
+    });
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents }),
+    });
+
+    const data = await response.json();
+    if (data.error) {
+      throw new Error(data.error.message || 'خطا در ارتباط با Gemini');
+    }
+    return (
+      data.candidates?.[0]?.content?.parts?.[0]?.text ||
+      'پاسخی از سمت مدل دریافت نشد.'
+    );
+  } else {
+    // OpenAI / Custom Base URL standard
+    const url = customBaseUrl
+      ? `${customBaseUrl.replace(/\/+$/, '')}/chat/completions`
+      : 'https://api.openai.com/v1/chat/completions';
+
+    const formattedMessages = [];
+    if (systemPrompt) {
+      formattedMessages.push({ role: 'system', content: systemPrompt });
+    }
+    messages.forEach((m) => {
+      formattedMessages.push({ role: m.role, content: m.content });
+    });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelName || 'gpt-3.5-turbo',
+        messages: formattedMessages,
+      }),
+    });
+
+    const data = await response.json();
+    if (data.error) {
+      throw new Error(data.error.message || 'خطا در ارتباط با سرور');
+    }
+    return (
+      data.choices?.[0]?.message?.content ||
+      'پاسخی از سمت مدل دریافت نشد.'
+    );
+  }
+};
+
+// --- SETTINGS MODAL COMPONENT ---
+function SettingsModal({ visible, onClose, settings, onSaveSettings }) {
+  const [apiKey, setApiKey] = useState(settings.apiKey || '');
+  const [providerId, setProviderId] = useState(settings.providerId || 'gemini');
+  const [customBaseUrl, setCustomBaseUrl] = useState(settings.customBaseUrl || '');
+  const [modelName, setModelName] = useState(settings.modelName || '');
+  const [systemPrompt, setSystemPrompt] = useState(settings.systemPrompt || '');
+
+  useEffect(() => {
+    setApiKey(settings.apiKey || '');
+    setProviderId(settings.providerId || 'gemini');
+    setCustomBaseUrl(settings.customBaseUrl || '');
+    setModelName(settings.modelName || '');
+    setSystemPrompt(settings.systemPrompt || '');
+  }, [settings, visible]);
+
+  const handleSave = () => {
+    onSaveSettings({
+      apiKey: apiKey.trim(),
+      providerId,
+      customBaseUrl: customBaseUrl.trim(),
+      modelName: modelName.trim(),
+      systemPrompt: systemPrompt.trim(),
+    });
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent>
+      <View style={modalStyles.overlay}>
+        <View style={modalStyles.container}>
+          <View style={modalStyles.header}>
+            <Text style={modalStyles.title}>تنظیمات هوش مصنوعی</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Ionicons name="close" size={24} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={modalStyles.body}>
+            <Text style={modalStyles.label}>ارائه‌دهنده (Provider)</Text>
+            <View style={modalStyles.row}>
+              <TouchableOpacity
+                style={[
+                  modalStyles.providerButton,
+                  providerId === 'gemini' && modalStyles.activeProvider,
+                ]}
+                onPress={() => {
+                  setProviderId('gemini');
+                  if (!modelName || modelName.includes('gpt')) {
+                    setModelName('gemini-1.5-flash');
+                  }
+                }}
+              >
+                <Text style={modalStyles.btnText}>Google Gemini</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  modalStyles.providerButton,
+                  providerId === 'openai' && modalStyles.activeProvider,
+                ]}
+                onPress={() => {
+                  setProviderId('openai');
+                  if (!modelName || modelName.includes('gemini')) {
+                    setModelName('gpt-4o-mini');
+                  }
+                }}
+              >
+                <Text style={modalStyles.btnText}>OpenAI / Custom</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={modalStyles.label}>API Key</Text>
+            <TextInput
+              style={modalStyles.input}
+              placeholder="کلید API خود را وارد کنید..."
+              placeholderTextColor="#666"
+              value={apiKey}
+              onChangeText={setApiKey}
+              secureTextEntry
+            />
+
+            <Text style={modalStyles.label}>نام مدل (Model Name)</Text>
+            <TextInput
+              style={modalStyles.input}
+              placeholder="مثال: gemini-1.5-flash یا gpt-4o-mini"
+              placeholderTextColor="#666"
+              value={modelName}
+              onChangeText={setModelName}
+            />
+
+            {providerId === 'openai' && (
+              <>
+                <Text style={modalStyles.label}>Custom Base URL (اختیاری)</Text>
+                <TextInput
+                  style={modalStyles.input}
+                  placeholder="https://api.openai.com/v1"
+                  placeholderTextColor="#666"
+                  value={customBaseUrl}
+                  onChangeText={setCustomBaseUrl}
+                  autoCapitalize="none"
+                />
+              </>
+            )}
+
+            <Text style={modalStyles.label}>دستور پایه (System Prompt)</Text>
+            <TextInput
+              style={[modalStyles.input, { height: 75, textAlignVertical: 'top' }]}
+              placeholder="دستورالعمل رفتار هوش مصنوعی..."
+              placeholderTextColor="#666"
+              value={systemPrompt}
+              onChangeText={setSystemPrompt}
+              multiline
+            />
+          </ScrollView>
+
+          <TouchableOpacity style={modalStyles.saveButton} onPress={handleSave}>
+            <Text style={modalStyles.saveButtonText}>ذخیره تنظیمات</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// --- MAIN APP COMPONENT ---
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -320,5 +576,79 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     backgroundColor: '#333',
+  },
+});
+
+const modalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  container: {
+    backgroundColor: '#1E1E1E',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: '85%',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FFF',
+  },
+  body: {
+    marginBottom: 16,
+  },
+  label: {
+    color: '#AAA',
+    fontSize: 13,
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  input: {
+    backgroundColor: '#2A2A2A',
+    color: '#FFF',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  providerButton: {
+    flex: 1,
+    backgroundColor: '#2A2A2A',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  activeProvider: {
+    backgroundColor: '#2563EB',
+  },
+  btnText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  saveButton: {
+    backgroundColor: '#2563EB',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  saveButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });
